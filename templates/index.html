@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="bs">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agri-AI | Napredna Analiza</title>
+
+    <!-- External CSS -->
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;800&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+    <link rel="stylesheet" href="/static/css/styles.css">
+
+    <!-- External JavaScript Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <div class="main-card">
+        <div class="header">
+            <h1><i class="fas fa-tractor"></i> Agri-AI Commerce</h1>
+            <p>Sistem za pametno predviđanje u poljoprivredi</p>
+        </div>
+
+        <div class="content">
+            <div id="errorMessage" class="error-msg"></div>
+
+            <!-- MODEL STATUS I TRENIRANJE -->
+            <div
+                style="margin-bottom: 20px; padding: 15px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; color: white;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <div style="font-size: 14px; opacity: 0.9;">Status Modela:</div>
+                        <div id="modelStatus" style="font-size: 18px; font-weight: bold; margin-top: 5px;">
+                            <i class="fas fa-spinner fa-spin"></i> Provjeravam...
+                        </div>
+                    </div>
+                    <button type="button" id="btnTrainModel" class="btn"
+                        style="background: white; color: #667eea; font-weight: bold;">
+                        <i class="fas fa-brain"></i> Istreniraj Model
+                    </button>
+                </div>
+            </div>
+
+            <form id="predictionForm" action="javascript:void(0)">
+                <div class="form-group full-width">
+                    <label for="Area"><i class="fas fa-globe-europe"></i> Država / Regija</label>
+                    <select id="Area" class="searchable-select" required>
+                        <option></option>
+                    </select>
+                </div>
+
+                <div class="form-group full-width">
+                    <label for="Item"><i class="fas fa-seedling"></i> Poljoprivredna Kultura</label>
+                    <select id="Item" class="searchable-select" required>
+                        <option></option>
+                    </select>
+                </div>
+
+                <!-- GUMB ZA LIVE PROGNOZU -->
+                <div class="form-group" style="position: relative;">
+                    <label><i class="fas fa-cloud-sun-rain"></i> Oborine (mm/god)</label>
+                    <button type="button" id="btnLiveWeather" class="btn btn-live"
+                        title="Dohvati trenutne podatke s interneta">
+                        <i class="fas fa-satellite-dish"></i> Live Podaci
+                    </button>
+                    <input type="number" id="average_rain_fall_mm_per_year" placeholder="Automatski..." step="any"
+                        min="0" max="5000" required>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-thermometer-half"></i> Temperatura (°C)</label>
+                    <input type="number" id="avg_temp" placeholder="Automatski..." step="0.1" min="-20" max="50"
+                        required>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-spray-can"></i> Pesticidi (tone)</label>
+                    <input type="number" id="pesticides_tonnes" placeholder="Automatski..." step="0.1" required>
+                </div>
+
+                <div class="form-group">
+                    <label><i class="fas fa-calendar-alt"></i> Godina Žetve</label>
+                    <input type="number" id="Year" value="2025" min="2025" max="2050" required>
+                </div>
+
+                <button type="submit" id="submitBtn" class="btn btn-primary full-width">
+                    <i class="fas fa-magic"></i> Izračunaj Prinos
+                </button>
+
+            </form>
+        </div>
+
+        <div id="result-section">
+            <div style="text-align:center; margin-bottom:20px;">
+                <div>Predviđeni prinos:</div>
+                <div class="yield-value" id="yieldResult">--</div>
+                <div>kilograma po hektaru</div>
+                <div style="margin-top:10px; font-weight:bold; color:#555;">≈ <span id="dunumResult">--</span> tona po
+                    dunumu</div>
+            </div>
+
+            <div id="chartWarning" class="alert-warning"></div>
+
+            <div class="chart-container">
+                <canvas id="yieldChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- External JavaScript -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+    <script src="/static/js/script.js"></script>
+
+</body>
+
+</html>

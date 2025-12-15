@@ -3,18 +3,28 @@ from flask_cors import CORS
 import joblib
 import pandas as pd
 import numpy as np
-import requests  # <--- NOVO: Za dohvaćanje podataka s interneta
+import requests
+import os
 
-app = Flask(__name__, static_url_path='', static_folder='static')
+app = Flask(__name__)
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.url_map.strict_slashes = False
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- KONFIGURACIJA ---
-DATASET_NAME = 'yield_df.csv'
-MODEL_FILE = 'yield_predictor_pipeline.pkl'
-FEATURE_ORDER = ['Area', 'Item', 'Year', 'average_rain_fall_mm_per_year', 'pesticides_tonnes', 'avg_temp']
 
-# --- GLOBALNE VARIJABLE ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'data')
+
+
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+DATASET_NAME = os.path.join(DATA_DIR, 'yield_df.csv')
+MODEL_FILE = os.path.join(BASE_DIR, 'yield_predictor_pipeline.pkl')
+
+FEATURE_ORDER = ['Area', 'Item', 'Year', 'average_rain_fall_mm_per_year', 'pesticides_tonnes', 'avg_temp', 'drought_index']
+
+
 MODEL_PIPELINE = None
 DF_META = None
 UNIQUE_AREAS = []
@@ -22,37 +32,69 @@ UNIQUE_ITEMS = []
 COUNTRY_STATS = {}
 MODEL_TRAINED = False
 
-# --- UČITAVANJE PODATAKA ---
-try:
-    print("⏳ Pokrećem server...")
-    
-    # Provjeri da li postoji već istreniran model
-    import os
-    if os.path.exists(MODEL_FILE):
-        MODEL_PIPELINE = joblib.load(MODEL_FILE)
-        MODEL_TRAINED = True
-        print(f"✅ Pronađen postojeći model - učitan i spreman!")
-    else:
-        print(f"ℹ️ Model fajl ne postoji - korisnik mora kliknuti 'Istreniraj Model'!")
-    
-    DF_META = pd.read_csv(DATASET_NAME)
-    
-    DF_META['Area'] = DF_META['Area'].astype(str).str.strip()
-    DF_META['Item'] = DF_META['Item'].astype(str).str.strip()
-    
-    UNIQUE_AREAS = sorted(list(set(DF_META['Area'].dropna().tolist())))
-    UNIQUE_ITEMS = sorted(list(set(DF_META['Item'].dropna().tolist())))
 
-    # Statistika za "Pametne prosjeke" (Backup ako nema interneta)
-    stats_df = DF_META.groupby('Area')[['average_rain_fall_mm_per_year', 'avg_temp', 'pesticides_tonnes']].mean()
-    COUNTRY_STATS = stats_df.to_dict('index')
+
+def inspect_csv():
+    """Učitava CSV bez ispisivanja debug informacija u terminal"""
+    if not os.path.exists(DATASET_NAME):
+        return None
+
+    try:
+        df = pd.read_csv(DATASET_NAME)
     
-    print(f"✅ Podaci učitani. Status: MODEL_TRAINED = {MODEL_TRAINED}")
+        required_cols = [col for col in FEATURE_ORDER if col != 'drought_index']
+        
+        if 'hg/ha_yield' not in df.columns:
+            required_cols.append('hg/ha_yield')
 
-except Exception as e:
-    print(f"❌ GREŠKA: {e}")
+        missing = [col for col in required_cols if col not in df.columns]
+        if missing:
+            return None
+            
+        return df
+    except Exception:
+        return None
 
-# --- RUTE ---
+def load_data_initial():
+    global DF_META, UNIQUE_AREAS, UNIQUE_ITEMS, COUNTRY_STATS, MODEL_PIPELINE, MODEL_TRAINED
+    try:
+        df = inspect_csv()
+        
+        if df is None or df.empty:
+            DF_META = pd.DataFrame(columns=FEATURE_ORDER + ['hg/ha_yield'])
+        else:
+            if not df.empty and 'average_rain_fall_mm_per_year' in df.columns and 'avg_temp' in df.columns:
+                 df['drought_index'] = df['average_rain_fall_mm_per_year'] / (df['avg_temp'] + 20)
+            
+            DF_META = df
+
+        if not DF_META.empty:
+            if 'Area' in DF_META.columns: DF_META['Area'] = DF_META['Area'].astype(str).str.strip()
+            if 'Item' in DF_META.columns: DF_META['Item'] = DF_META['Item'].astype(str).str.strip()
+            
+            UNIQUE_AREAS = sorted(list(set(DF_META['Area'].dropna().tolist())))
+            UNIQUE_ITEMS = sorted(list(set(DF_META['Item'].dropna().tolist())))
+            
+            try:
+                stats_df = DF_META.groupby('Area')[['average_rain_fall_mm_per_year', 'avg_temp', 'pesticides_tonnes']].mean()
+                COUNTRY_STATS = stats_df.to_dict('index')
+            except KeyError:
+                pass
+
+        if os.path.exists(MODEL_FILE):
+            try:
+                MODEL_PIPELINE = joblib.load(MODEL_FILE)
+                MODEL_TRAINED = True
+            except:
+                MODEL_TRAINED = False
+        else:
+            MODEL_TRAINED = False
+
+    except Exception:
+        pass
+
+load_data_initial()
+
 
 @app.route('/')
 def home():
@@ -60,208 +102,168 @@ def home():
 
 @app.route('/get_metadata', methods=['GET'])
 def get_metadata():
-    if not UNIQUE_AREAS: return jsonify({'error': 'Greška u podacima.'}), 500
-    return jsonify({'status': 'success', 'areas': UNIQUE_AREAS, 'items': UNIQUE_ITEMS, 'country_stats': COUNTRY_STATS, 'model_trained': MODEL_TRAINED})
+    return jsonify({
+        'status': 'success', 
+        'areas': UNIQUE_AREAS, 
+        'items': UNIQUE_ITEMS, 
+        'country_stats': COUNTRY_STATS, 
+        'model_trained': MODEL_TRAINED
+    })
 
 @app.route('/model_status', methods=['GET'])
 def model_status():
-    """Provjerava da li je model treniran"""
     return jsonify({'model_trained': MODEL_TRAINED})
 
 @app.route('/train_model', methods=['POST'])
 def train_model():
-    """Trenira model na zahtjev korisnika"""
-    global MODEL_PIPELINE, MODEL_TRAINED
-    
+    global MODEL_PIPELINE, MODEL_TRAINED, DF_META
     try:
-        print("🔄 Započinjem treniranje modela...")
-        
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.preprocessing import StandardScaler, OneHotEncoder
         from sklearn.model_selection import train_test_split
         from sklearn.compose import ColumnTransformer
         from sklearn.pipeline import Pipeline
         
-        # Priprema podataka
-        df = DF_META.copy()
+        df = inspect_csv()
+        if df is None or len(df) < 5:
+            return jsonify({'status': 'error', 'error': 'CSV fajl nije pronađen ili ima manje od 5 redova!'}), 400
+            
         df.dropna(inplace=True)
         
-        TARGET_COLUMN = 'hg/ha_yield'
-        X = df[FEATURE_ORDER]
-        y = df[TARGET_COLUMN]
+        df['drought_index'] = df['average_rain_fall_mm_per_year'] / (df['avg_temp'] + 20)
         
-        # Podjela podataka
+        if 'hg/ha_yield' not in df.columns:
+             return jsonify({'status': 'error', 'error': 'U CSV-u fali kolona "hg/ha_yield" (ciljna varijabla)!'}), 400
+
+        X = df[FEATURE_ORDER]
+        y = df['hg/ha_yield']
+        
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
         
-        # Definiranje tipova značajki
-        NUMERICAL_FEATURES = ['Year', 'average_rain_fall_mm_per_year', 'pesticides_tonnes', 'avg_temp']
-        CATEGORICAL_FEATURES = ['Area', 'Item']
-        
-        # Kreiranje preprocessora
         preprocessor = ColumnTransformer(
             transformers=[
-                ('num', StandardScaler(), NUMERICAL_FEATURES),
-                ('cat', OneHotEncoder(handle_unknown='ignore'), CATEGORICAL_FEATURES)
-            ],
-            remainder='drop'
+                ('num', StandardScaler(), ['Year', 'average_rain_fall_mm_per_year', 'pesticides_tonnes', 'avg_temp', 'drought_index']),
+                ('cat', OneHotEncoder(handle_unknown='ignore'), ['Area', 'Item'])
+            ], remainder='drop'
         )
         
-        # Kreiranje i treniranje pipeline-a
         MODEL_PIPELINE = Pipeline(steps=[
             ('preprocessor', preprocessor),
             ('regressor', RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1))
         ])
         
         MODEL_PIPELINE.fit(X_train, y_train)
-        
-        # Evaluacija
         r2_score = MODEL_PIPELINE.score(X_test, y_test)
         
-        # Spremanje modela
         joblib.dump(MODEL_PIPELINE, MODEL_FILE)
-        
         MODEL_TRAINED = True
+        DF_META = df
         
-        print(f"✅ Model uspješno treniran! R² score: {r2_score:.4f}")
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Model uspješno treniran!',
-            'r2_score': round(r2_score, 4),
-            'training_samples': len(X_train),
-            'test_samples': len(X_test)
-        })
+        return jsonify({'status': 'success', 'r2_score': round(r2_score, 4)})
         
     except Exception as e:
-        print(f"❌ Greška pri treniranju: {e}")
+        print(f"❌ GREŠKA PRI TRENIRANJU: {e}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
 
-@app.route('/save_data', methods=['POST', 'OPTIONS'], strict_slashes=False)
+@app.route('/save_data', methods=['POST'])
 def save_data():
-    # Rješava CORS preflight
-    if request.method == "OPTIONS":
-        return "", 200
-
+    global DF_META
     try:
         data = request.get_json()
+        
+        if os.path.exists(DATASET_NAME):
+            df = pd.read_csv(DATASET_NAME)
+        else:
+            df = pd.DataFrame(columns=FEATURE_ORDER + ['hg/ha_yield'])
+
+        duplicate_check = df[
+            (df['Area'].astype(str) == str(data['Area'])) & 
+            (df['Item'].astype(str) == str(data['Item'])) & 
+            (df['Year'].astype(int) == int(data['Year']))
+        ]
+
+        if not duplicate_check.empty:
+            print(f"⚠️ NIJE MOGUĆ UPIS U CSV: Podaci za {data['Year']} ({data['Item']} - {data['Area']}) već postoje.")
+            return jsonify({
+                'status': 'error', 
+                'error': f"Podaci za {data['Year']}. godinu ({data['Item']}) u državi {data['Area']} već postoje!"
+            }), 400
 
         new_row = {
             'Area': data['Area'],
             'Item': data['Item'],
             'Year': data['Year'],
-            'hg/ha_yield': data['predicted_yield'] * 10,
+            'hg/ha_yield': float(data['predicted_yield']) * 10,
             'average_rain_fall_mm_per_year': data['average_rain_fall_mm_per_year'],
             'pesticides_tonnes': data['pesticides_tonnes'],
             'avg_temp': data['avg_temp']
         }
 
-        df = pd.read_csv(DATASET_NAME)
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        df_new = pd.DataFrame([new_row])
+        
+        df = pd.concat([df, df_new], ignore_index=True)
         df.to_csv(DATASET_NAME, index=False)
-
-        global DF_META
-        DF_META = df
-        DF_META['Area'] = DF_META['Area'].astype(str).str.strip()
-        DF_META['Item'] = DF_META['Item'].astype(str).str.strip()
-
-        print(f"✅ Podaci spremljeni u {DATASET_NAME}")
-
-        return jsonify({'status': 'success', 'message': 'Podaci uspješno spremljeni u CSV!'})
+        
+        DF_META = df 
+        
+        return jsonify({'status': 'success', 'message': 'Podaci uspješno spremljeni!'})
 
     except Exception as e:
         print(f"❌ Greška pri spremanju: {e}")
         return jsonify({'status': 'error', 'error': str(e)}), 500
-
-
-# --- NOVO: RUTA ZA VREMENSKU PROGNOZU UŽIVO ---
+    
 @app.route('/get_live_weather', methods=['POST'])
 def get_live_weather():
-    """
-    1. Prima ime države.
-    2. Traži koordinate (Lat/Lon) preko Geocoding API-ja.
-    3. Traži temperaturu i kišu preko Weather API-ja.
-    """
     try:
         data = request.get_json()
         country = data.get('country')
-        
-        if not country:
-            return jsonify({'error': 'Nije odabrana država'}), 400
+        if not country: return jsonify({'error': 'Nije odabrana država'}), 400
 
-        # 1. Geocoding (Tražimo koordinate države)
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={country}&count=1&language=en&format=json"
-        geo_res = requests.get(geo_url).json()
-        
-        if not geo_res.get('results'):
-            return jsonify({'error': 'Nisam uspio pronaći koordinate za ovu državu.'}), 404
+        geo_res = requests.get(f"https://geocoding-api.open-meteo.com/v1/search?name={country}&count=1&language=en&format=json", timeout=5).json()
+        if not geo_res.get('results'): return jsonify({'error': 'Nepoznata država'}), 404
             
         lat = geo_res['results'][0]['latitude']
         lon = geo_res['results'][0]['longitude']
-
-        # 2. Weather (Tražimo trenutno vrijeme)
-        # Tražimo trenutnu temperaturu i sumu kiše u zadnjih 7 dana (kao procjenu vlažnosti)
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m&daily=rain_sum&timezone=auto"
-        weather_res = requests.get(weather_url).json()
+        weather_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m&timezone=auto", timeout=5).json()
         
-        current_temp = weather_res['current']['temperature_2m']
-        
-        # Za kišu je teško dobiti "godišnji prosjek" iz trenutnog vremena.
-        # Zato ćemo uzeti "Pametni prosjek" iz našeg CSV-a.
-        historical_avg_rain = COUNTRY_STATS.get(country, {}).get('average_rain_fall_mm_per_year', 1000)
-        
-        return jsonify({
-            'status': 'success',
-            'temp': current_temp,
-            'rain': historical_avg_rain,
-            'lat': lat,
-            'lon': lon,
-            'note': f"Dohvaćeno s lokacije: {geo_res['results'][0]['name']}"
-        })
-
+        return jsonify({'status': 'success', 'temp': weather_res['current']['temperature_2m'], 'note': geo_res['results'][0]['name']})
     except Exception as e:
-        print(f"Weather API Greška: {e}")
-        return jsonify({'error': 'Ne mogu dohvatiti vremensku prognozu.'}), 500
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/predict_yield', methods=['POST'])
 def predict_yield():
-    if not MODEL_TRAINED or MODEL_PIPELINE is None: 
-        return jsonify({'error': 'Model nije treniran. Molim kliknite "Istreniraj Model" prvo.'}), 400
-
+    if not MODEL_TRAINED: return jsonify({'error': 'Model nije treniran!'}), 400
     try:
-        data = request.get_json(force=True)
-        input_data = {col: [data[col]] for col in FEATURE_ORDER}
-        input_df = pd.DataFrame(input_data)
+        data = request.get_json()
         
+        drought_index = data['average_rain_fall_mm_per_year'] / (data['avg_temp'] + 20)
+        
+        input_data = data.copy()
+        input_data['drought_index'] = drought_index
+        
+        input_df = pd.DataFrame({col: [input_data[col]] for col in FEATURE_ORDER})
         prediction = MODEL_PIPELINE.predict(input_df)
-        predicted_yield_kg_ha = round(prediction[0] / 10, 2)
+        predicted_yield = round(prediction[0] / 10, 2)
 
-        history = DF_META[
-            (DF_META['Area'] == data['Area']) & 
-            (DF_META['Item'] == data['Item'])
-        ].sort_values(by='Year').tail(10)
-
-        if history.empty:
-            return jsonify({
-                'status': 'no_data',
-                'message': f"Nažalost, nemamo povijesnih podataka za {data['Item']} u državi {data['Area']}. Nemoguće izračunati prinos."
-            })
+        history_years, history_yields = [], []
+        if DF_META is not None and not DF_META.empty:
+            history = DF_META[(DF_META['Area'] == data['Area']) & (DF_META['Item'] == data['Item'])].sort_values(by='Year').tail(10)
+            history_years = history['Year'].tolist()
+            history_yields = [round(y/10, 2) for y in history['hg/ha_yield'].tolist()]
+            
+        if not history_years:
+             history_years = [data['Year']]
+             history_yields = [predicted_yield]
 
         return jsonify({
             'status': 'success',
-            'predicted_yield_kg_ha': predicted_yield_kg_ha,
-            'unit': 'kg/ha',
-            'details': f"{data['Item']} ({data['Area']})",
-            'history_years': history['Year'].tolist(),
-            'history_yields': [round(y/10, 2) for y in history['hg/ha_yield'].tolist()],
+            'predicted_yield_kg_ha': predicted_yield,
+            'history_years': history_years,
+            'history_yields': history_yields,
             'prediction_year': data['Year']
         })
-
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
-    app.run(
-        port=5000,
-        debug=False,
-        use_reloader=False
-    )
+    app.run(port=5000, debug=False, use_reloader=False)
